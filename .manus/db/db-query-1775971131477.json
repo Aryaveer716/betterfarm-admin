@@ -1,0 +1,9 @@
+{
+  "query": "CREATE TABLE IF NOT EXISTS `farmer_profiles` (`id` int AUTO_INCREMENT NOT NULL, `userId` int NOT NULL, `farmName` varchar(255), `location` varchar(255), `farmSizeHectares` float, `primaryCrop` varchar(100), `isVerified` boolean NOT NULL DEFAULT false, `verificationStatus` enum('pending','approved','rejected') DEFAULT 'pending', `createdAt` timestamp NOT NULL DEFAULT (now()), `updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP, CONSTRAINT `farmer_profiles_id` PRIMARY KEY(`id`))",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 4WPL3YcPpG8PVnP.2cdced5b431f --database TyF5RdZX3pPXCcDPxVhEap --execute CREATE TABLE IF NOT EXISTS `farmer_profiles` (`id` int AUTO_INCREMENT NOT NULL, `userId` int NOT NULL, `farmName` varchar(255), `location` varchar(255), `farmSizeHectares` float, `primaryCrop` varchar(100), `isVerified` boolean NOT NULL DEFAULT false, `verificationStatus` enum('pending','approved','rejected') DEFAULT 'pending', `createdAt` timestamp NOT NULL DEFAULT (now()), `updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP, CONSTRAINT `farmer_profiles_id` PRIMARY KEY(`id`))",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 1660
+}

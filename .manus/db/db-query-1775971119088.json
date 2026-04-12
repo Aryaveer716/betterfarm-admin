@@ -1,0 +1,9 @@
+{
+  "query": "CREATE TABLE IF NOT EXISTS `ai_interactions` (`id` int AUTO_INCREMENT NOT NULL, `userId` int NOT NULL, `sessionId` varchar(100), `inputText` text, `outputText` text, `model` varchar(100), `tokensUsed` int, `latencyMs` int, `wasSuccessful` boolean NOT NULL DEFAULT true, `errorMessage` text, `category` varchar(100), `createdAt` timestamp NOT NULL DEFAULT (now()), CONSTRAINT `ai_interactions_id` PRIMARY KEY(`id`))",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 4WPL3YcPpG8PVnP.2cdced5b431f --database TyF5RdZX3pPXCcDPxVhEap --execute CREATE TABLE IF NOT EXISTS `ai_interactions` (`id` int AUTO_INCREMENT NOT NULL, `userId` int NOT NULL, `sessionId` varchar(100), `inputText` text, `outputText` text, `model` varchar(100), `tokensUsed` int, `latencyMs` int, `wasSuccessful` boolean NOT NULL DEFAULT true, `errorMessage` text, `category` varchar(100), `createdAt` timestamp NOT NULL DEFAULT (now()), CONSTRAINT `ai_interactions_id` PRIMARY KEY(`id`))",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 1643
+}

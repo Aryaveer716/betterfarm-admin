@@ -1,0 +1,9 @@
+{
+  "query": "CREATE TABLE IF NOT EXISTS `disease_detections` (`id` int AUTO_INCREMENT NOT NULL, `userId` int NOT NULL, `cropType` varchar(100), `diseaseName` varchar(255), `confidence` float, `severity` enum('low','medium','high','critical'), `imageUrl` text, `aiResponse` text, `status` enum('pending','reviewed','resolved') NOT NULL DEFAULT 'pending', `reviewedBy` int, `reviewNotes` text, `createdAt` timestamp NOT NULL DEFAULT (now()), CONSTRAINT `disease_detections_id` PRIMARY KEY(`id`))",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 4WPL3YcPpG8PVnP.2cdced5b431f --database TyF5RdZX3pPXCcDPxVhEap --execute CREATE TABLE IF NOT EXISTS `disease_detections` (`id` int AUTO_INCREMENT NOT NULL, `userId` int NOT NULL, `cropType` varchar(100), `diseaseName` varchar(255), `confidence` float, `severity` enum('low','medium','high','critical'), `imageUrl` text, `aiResponse` text, `status` enum('pending','reviewed','resolved') NOT NULL DEFAULT 'pending', `reviewedBy` int, `reviewNotes` text, `createdAt` timestamp NOT NULL DEFAULT (now()), CONSTRAINT `disease_detections_id` PRIMARY KEY(`id`))",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 1690
+}

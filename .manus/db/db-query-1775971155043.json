@@ -1,0 +1,9 @@
+{
+  "query": "INSERT IGNORE INTO `feature_flags` (`name`, `description`, `isEnabled`) VALUES ('ai_copilot', 'Enable AI Copilot assistant for farmers', true), ('disease_detection', 'Enable AI-powered crop disease detection', true), ('marketplace', 'Enable the marketplace for buying/selling produce', true), ('insurance', 'Enable crop insurance features', false), ('weather_alerts', 'Enable real-time weather alerts', true), ('community_forum', 'Enable community forum and discussions', true), ('revenue_forecasting', 'Enable AI-powered revenue forecasting', false), ('push_notifications', 'Enable push notifications for mobile app', true)",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 4WPL3YcPpG8PVnP.2cdced5b431f --database TyF5RdZX3pPXCcDPxVhEap --execute INSERT IGNORE INTO `feature_flags` (`name`, `description`, `isEnabled`) VALUES ('ai_copilot', 'Enable AI Copilot assistant for farmers', true), ('disease_detection', 'Enable AI-powered crop disease detection', true), ('marketplace', 'Enable the marketplace for buying/selling produce', true), ('insurance', 'Enable crop insurance features', false), ('weather_alerts', 'Enable real-time weather alerts', true), ('community_forum', 'Enable community forum and discussions', true), ('revenue_forecasting', 'Enable AI-powered revenue forecasting', false), ('push_notifications', 'Enable push notifications for mobile app', true)",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 1604
+}
