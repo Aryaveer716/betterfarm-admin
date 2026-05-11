@@ -1,16 +1,10 @@
+// Admin-private schema. Phase 0 of admin-wiring removed the `users` table
+// in favor of importing it from @betterfarm/db. The remaining 9 tables are
+// admin-only and will be progressively migrated to @betterfarm/db in Phases 1-4.
 import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, boolean, float, json } from "drizzle-orm/mysql-core";
+import { users } from "@betterfarm/db";
 
-export const users = mysqlTable("users", {
-  id: int("id").autoincrement().primaryKey(),
-  openId: varchar("openId", { length: 64 }).notNull().unique(),
-  name: text("name"),
-  email: varchar("email", { length: 320 }),
-  loginMethod: varchar("loginMethod", { length: 64 }),
-  role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-  lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
-});
+export { users };
 
 export const farmerProfiles = mysqlTable("farmer_profiles", {
   id: int("id").autoincrement().primaryKey(),
@@ -135,8 +129,6 @@ export const featureFlags = mysqlTable("feature_flags", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
-export type User = typeof users.$inferSelect;
-export type InsertUser = typeof users.$inferInsert;
 export type FarmerProfile = typeof farmerProfiles.$inferSelect;
 export type ForumPost = typeof forumPosts.$inferSelect;
 export type MarketplaceListing = typeof marketplaceListings.$inferSelect;

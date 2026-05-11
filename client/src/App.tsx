@@ -21,6 +21,7 @@ import Moderation from "./pages/Moderation";
 import Revenue from "./pages/Revenue";
 import SystemHealth from "./pages/SystemHealth";
 import Verification from "./pages/Verification";
+import Operator from "./pages/Operator";
 
 function Router() {
   return (
@@ -42,6 +43,7 @@ function Router() {
         <Route path="/revenue" component={Revenue} />
         <Route path="/system-health" component={SystemHealth} />
         <Route path="/verification" component={Verification} />
+        <Route path="/operator" component={Operator} />
         <Route component={NotFound} />
       </Switch>
     </AdminLayout>

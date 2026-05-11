@@ -26,7 +26,8 @@ import { Button } from "./ui/button";
 import {
   LayoutDashboard, Users, Sprout, MessageSquare, ShoppingCart,
   Flag, HelpCircle, Bug, Zap, Activity, Settings, BarChart3,
-  LogOut, PanelLeft, Leaf, BadgeCheck, Shield, DollarSign, HeartPulse
+  LogOut, PanelLeft, Leaf, BadgeCheck, Shield, DollarSign, HeartPulse,
+  SlidersHorizontal
 } from "lucide-react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from "./DashboardLayoutSkeleton";
@@ -65,6 +66,7 @@ const navSections = [
   {
     label: "Operations",
     items: [
+      { icon: SlidersHorizontal, label: "Operator", path: "/operator" },
       { icon: HelpCircle, label: "Support", path: "/support" },
       { icon: DollarSign, label: "Revenue", path: "/revenue" },
       { icon: HeartPulse, label: "System Health", path: "/system-health" },
