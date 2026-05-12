@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { AiFab } from "@/components/AiFab";
 import { AiChatPanel } from "@/components/AiChatPanel";
+import { AiPageContextProvider } from "@/lib/ai-page-context";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -187,30 +188,36 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   }
 
   return (
-    <SidebarProvider>
-      <Sidebar collapsible="icon" className="border-r-0 bg-sidebar">
-        <AdminSidebarContent />
-      </Sidebar>
-      <SidebarInset className="bg-background">
-        <header className="h-14 border-b border-border flex items-center gap-3 px-4 bg-card sticky top-0 z-40">
-          <SidebarTrigger className="text-muted-foreground hover:text-foreground">
-            <PanelLeft className="h-4 w-4" />
-          </SidebarTrigger>
-          <div className="flex-1" />
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded-full">
-              {user.role === "admin" ? "Administrator" : "User"}
-            </span>
-          </div>
-        </header>
-        <main className="flex-1 p-6">{children}</main>
-      </SidebarInset>
+    // AiPageContextProvider wraps the entire authenticated layout so pages
+    // can opt in to feeding the AI assistant their currently-loaded data
+    // via useSetAiPageContext(). The provider survives navigations and
+    // auto-clears its snapshot on route change.
+    <AiPageContextProvider>
+      <SidebarProvider>
+        <Sidebar collapsible="icon" className="border-r-0 bg-sidebar">
+          <AdminSidebarContent />
+        </Sidebar>
+        <SidebarInset className="bg-background">
+          <header className="h-14 border-b border-border flex items-center gap-3 px-4 bg-card sticky top-0 z-40">
+            <SidebarTrigger className="text-muted-foreground hover:text-foreground">
+              <PanelLeft className="h-4 w-4" />
+            </SidebarTrigger>
+            <div className="flex-1" />
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded-full">
+                {user.role === "admin" ? "Administrator" : "User"}
+              </span>
+            </div>
+          </header>
+          <main className="flex-1 p-6">{children}</main>
+        </SidebarInset>
 
-      {/* AI assistant — mounted at layout root so it's available on every admin page.
-          AiFab uses position:fixed (escapes flex flow); AiChatPanel renders via Radix
-          Portal to document.body, so neither participates in the sidebar's layout. */}
-      <AiFab onClick={() => setAiChatOpen(true)} />
-      <AiChatPanel open={aiChatOpen} onOpenChange={setAiChatOpen} />
-    </SidebarProvider>
+        {/* AI assistant — mounted at layout root so it's available on every admin page.
+            AiFab uses position:fixed (escapes flex flow); AiChatPanel renders via Radix
+            Portal to document.body, so neither participates in the sidebar's layout. */}
+        <AiFab onClick={() => setAiChatOpen(true)} />
+        <AiChatPanel open={aiChatOpen} onOpenChange={setAiChatOpen} />
+      </SidebarProvider>
+    </AiPageContextProvider>
   );
 }

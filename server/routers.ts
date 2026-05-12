@@ -125,6 +125,16 @@ export const appRouter = router({
         return { users: rows, total: total?.count ?? 0 };
       }),
 
+    getUserDetail: adminProcedure
+      .input(z.object({ id: z.number().int() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+        const [user] = await db.select().from(users).where(eq(users.id, input.id)).limit(1);
+        if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+        return { user };
+      }),
+
     updateUserRole: adminProcedure
       .input(z.object({ userId: z.number(), role: z.enum(["user", "admin", "moderator"]) }))
       .mutation(async ({ ctx, input }) => {

@@ -1,8 +1,14 @@
 export interface ChatStreamEvent {
-  type: "token" | "done" | "error";
+  type: "token" | "done" | "error" | "tool_call" | "tool_result";
   text?: string;
   message?: string;
   finishReason?: string | null;
+  /** Tool name (tool_call + tool_result events) */
+  name?: string;
+  /** Parsed tool input (tool_call events only) */
+  input?: unknown;
+  /** Markdown summary of tool result (tool_result events only) */
+  summary?: string;
 }
 
 export interface ChatMessage {

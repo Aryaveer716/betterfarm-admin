@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/sheet";
 import { AIChatBox, type Message } from "@/components/AIChatBox";
 import { sendAdminChatStream } from "@/lib/admin-chat-stream";
+import { useAiPageContext } from "@/lib/ai-page-context";
 import { toast } from "sonner";
 
 export interface AiChatPanelProps {
@@ -55,6 +56,13 @@ export function AiChatPanel({
   const [isStreaming, setIsStreaming] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
+  // Page context from the provider. Props take priority for explicit
+  // overrides; otherwise the panel reads whatever the currently-mounted
+  // page populated via useSetAiPageContext.
+  const ctxProvider = useAiPageContext();
+  const effectivePageContext = pageContext ?? ctxProvider.pageContext;
+  const effectivePageIdentifier = pageIdentifier ?? ctxProvider.pageIdentifier;
+
   // Cleanup: cancel any in-flight stream when the panel closes (Sheet keeps
   // the component mounted, so we still want to abort a stream the admin
   // walked away from) or when the component unmounts.
@@ -96,8 +104,8 @@ export function AiChatPanel({
 
     void sendAdminChatStream({
       messages: messagesForRequest,
-      pageContext,
-      pageIdentifier,
+      pageContext: effectivePageContext,
+      pageIdentifier: effectivePageIdentifier,
       signal: ac.signal,
       onEvent: (event) => {
         if (event.type === "token" && typeof event.text === "string") {
@@ -114,6 +122,18 @@ export function AiChatPanel({
             }
             return next;
           });
+        } else if (event.type === "tool_call" || event.type === "tool_result") {
+          // Structured event — server already emitted the markdown form
+          // via a separate `token` event, so the visible thread renders
+          // through the existing path. These structured events are
+          // tracked for future audit logging (checkpoint 6) — log only.
+          // eslint-disable-next-line no-console
+          console.debug(
+            "[admin-ai]",
+            event.type,
+            event.name,
+            event.input ?? event.summary,
+          );
         } else if (event.type === "done") {
           // Terminal — release the streaming state. Content already lives
           // in the placeholder.

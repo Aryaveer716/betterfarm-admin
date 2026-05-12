@@ -1,4 +1,5 @@
 import { trpc } from "@/lib/trpc";
+import { useSetAiPageContext } from "@/lib/ai-page-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { HealthSummaryTile } from "@/components/HealthSummaryTile";
@@ -53,6 +54,11 @@ const STATUS_COLOR: Record<string, string> = {
 
 export default function Dashboard() {
   const { data, isLoading } = trpc.admin.getDashboardStats.useQuery();
+
+  // Feed the loaded stats snapshot to the admin AI panel as page context.
+  // Demo wiring for checkpoint 5 — other pages can opt in by calling
+  // useSetAiPageContext with their own data.
+  useSetAiPageContext(data);
 
   if (isLoading) {
     return (
