@@ -94,13 +94,13 @@ export default function SystemHealth() {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               {[
                 { label: "Total Users", value: data?.stats?.totalUsers ?? 0 },
-                { label: "Total Farms", value: data?.stats?.totalFarms ?? 0 },
                 { label: "Forum Posts", value: data?.stats?.totalPosts ?? 0 },
-                { label: "Listings", value: 0 },
-                { label: "Open Tickets", value: data?.stats?.openTickets ?? 0 },
-                { label: "Pending Reports", value: data?.stats?.pendingReports ?? 0 },
-                { label: "AI Interactions", value: data?.stats?.totalAiInteractions ?? 0 },
-                { label: "Pending Detections", value: data?.stats?.pendingDetections ?? 0 },
+                { label: "Flagged Posts", value: data?.stats?.flaggedPosts ?? 0 },
+                { label: "Unread Emails", value: data?.stats?.unreadEmails ?? 0 },
+                { label: "Pending Reports", value: data?.stats?.pendingContentReports ?? 0 },
+                { label: "Pending Verifications", value: data?.stats?.pendingVerifications ?? 0 },
+                { label: "Active Detections", value: data?.stats?.activeDetections ?? 0 },
+                { label: "AI Conversations", value: data?.stats?.totalConversations ?? 0 },
               ].map((item) => (
                 <div key={item.label} className="p-4 bg-muted/30 rounded-lg">
                   <p className="text-xs text-muted-foreground">{item.label}</p>

@@ -37,14 +37,12 @@ const navSections = [
     label: "Overview",
     items: [
       { icon: LayoutDashboard, label: "Dashboard", path: "/" },
-      { icon: BarChart3, label: "Analytics", path: "/analytics" },
     ],
   },
   {
     label: "Management",
     items: [
       { icon: Users, label: "Users", path: "/users" },
-      { icon: Sprout, label: "Farms", path: "/farms" },
     ],
   },
   {
@@ -52,7 +50,6 @@ const navSections = [
     items: [
       { icon: Shield, label: "Moderation", path: "/moderation" },
       { icon: MessageSquare, label: "Community", path: "/community" },
-      { icon: ShoppingCart, label: "Marketplace", path: "/marketplace" },
       { icon: Flag, label: "Reports", path: "/reports" },
     ],
   },
@@ -68,7 +65,6 @@ const navSections = [
     items: [
       { icon: SlidersHorizontal, label: "Operator", path: "/operator" },
       { icon: HelpCircle, label: "Support", path: "/support" },
-      { icon: DollarSign, label: "Revenue", path: "/revenue" },
       { icon: HeartPulse, label: "System Health", path: "/system-health" },
       { icon: Activity, label: "Activity Logs", path: "/activity-logs" },
       { icon: Settings, label: "Settings", path: "/settings" },

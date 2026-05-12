@@ -38,9 +38,55 @@ class OAuthService {
     }
   }
 
+  /**
+   * Decode and validate the OAuth state parameter.
+   *
+   * The state value is base64-encoded redirect URI (set client-side in
+   * client/src/const.ts:getLoginUrl). Without server-side validation, an
+   * attacker could craft a state pointing at their own URL — the OAuth portal
+   * would faithfully bounce the user (with the authorization code) to the
+   * attacker's site, leaking the code. Mitigation: parse the decoded URI and
+   * require host == allowedHost AND path == /api/oauth/callback. No HMAC
+   * needed since we don't trust the value either way; we just allowlist it.
+   *
+   * Phase 5 hardening; previously decodeState returned atob(state) verbatim.
+   */
+  decodeAndValidateState(state: string, allowedHost: string): string {
+    let decoded: string;
+    try {
+      decoded = Buffer.from(state, "base64").toString("utf8");
+    } catch {
+      throw ForbiddenError("OAuth state could not be decoded");
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(decoded);
+    } catch {
+      throw ForbiddenError("OAuth state is not a valid URL");
+    }
+    if (parsed.host !== allowedHost) {
+      throw ForbiddenError(
+        `OAuth redirect host mismatch (got ${parsed.host}, expected ${allowedHost})`,
+      );
+    }
+    if (parsed.pathname !== "/api/oauth/callback") {
+      throw ForbiddenError(
+        `OAuth redirect path mismatch (got ${parsed.pathname}, expected /api/oauth/callback)`,
+      );
+    }
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+  }
+
+  /**
+   * Legacy unchecked decode kept for backward compatibility. Callers should
+   * prefer decodeAndValidateState with the request host. This shim only
+   * round-trips the base64 — getTokenByCode still uses it because the OAuth
+   * portal needs the raw redirectUri sent to it during sign-in. The actual
+   * security guard is applied by the OAuth callback handler (oauth.ts) via
+   * decodeAndValidateState BEFORE this method runs.
+   */
   private decodeState(state: string): string {
-    const redirectUri = atob(state);
-    return redirectUri;
+    return Buffer.from(state, "base64").toString("utf8");
   }
 
   async getTokenByCode(
@@ -123,6 +169,15 @@ class SDKServer {
     state: string
   ): Promise<ExchangeTokenResponse> {
     return this.oauthService.getTokenByCode(code, state);
+  }
+
+  /**
+   * Validate OAuth state's redirect URI against an allowlist of allowed hosts.
+   * Throws ForbiddenError if state is malformed or points at an unexpected host.
+   * Returns the canonicalized redirect URI (scheme://host/path, no query/hash).
+   */
+  decodeAndValidateState(state: string, allowedHost: string): string {
+    return this.oauthService.decodeAndValidateState(state, allowedHost);
   }
 
   /**

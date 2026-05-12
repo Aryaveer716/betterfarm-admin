@@ -6,16 +6,18 @@ import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getDb } from "./db";
-import { users, adminAuditLogs, supportEmails, verificationRequests, forumPosts } from "@betterfarm/db";
+import { users, adminAuditLogs, supportEmails, verificationRequests, forumPosts, contentReports, messageReports, diseaseDetections, aiAdviceHistory, copilotConversations, aiFeedback, featureFlags } from "@betterfarm/db";
 import { buildUserModerationAuditEntry } from "./users-moderation-helpers";
 import { buildSupportEmailAuditEntry } from "./support-emails-helpers";
 import { buildVerificationAuditEntry } from "./verifications-helpers";
 import { buildForumPostAuditEntry } from "./forum-helpers";
-import {
-  farmerProfiles, marketplaceListings,
-  userReports, supportTickets, diseaseDetections, aiInteractions,
-  activityLogs, featureFlags
-} from "../drizzle/schema";
+import { buildReportAuditEntry } from "./reports-helpers";
+import { buildDiseaseAuditEntry } from "./disease-helpers";
+// Admin-local schema fully retired in Phase 4c. All consumers switched to canonical
+// @betterfarm/db tables across Phases 1-3. The orphaned admin-local tables
+// (farmerProfiles, marketplaceListings, userReports, supportTickets, aiInteractions,
+// activityLogs, feature_flags, forum_posts, disease_detections) are no longer
+// imported or queried. The drizzle/schema.ts file is deleted.
 import { eq, desc, like, or, and, count, sql, ne } from "drizzle-orm";
 
 // Admin-only middleware
@@ -26,22 +28,10 @@ const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
   return next({ ctx });
 });
 
-// Helper to log admin actions
-async function logAction(adminId: number, action: string, targetType?: string, targetId?: number, details?: unknown) {
-  try {
-    const db = await getDb();
-    if (!db) return;
-    await db.insert(activityLogs).values({
-      adminId,
-      action,
-      targetType: targetType ?? null,
-      targetId: targetId ?? null,
-      details: details as any ?? null,
-    });
-  } catch (e) {
-    console.error("Failed to log action:", e);
-  }
-}
+// logAction helper retired in Phase 4c — all callers switched to direct
+// adminAuditLogs inserts with their own action constants. (Phase 4a fixed
+// updateUserRole + deleteUser; Phases 1-3 used per-area helpers for the new
+// procedures.)
 
 function getActorEmail(ctx: { user: { email: string | null; name: string | null } }): string {
   return ctx.user.email || ctx.user.name || "admin@unknown";
@@ -66,37 +56,40 @@ export const appRouter = router({
 
   admin: router({
     // ── Dashboard ──────────────────────────────────────────────────────────
-    getDashboardStats: adminProcedure.query(async ({ ctx }) => {
+    getDashboardStats: adminProcedure.query(async () => {
       const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
 
+      // All queries hit canonical @betterfarm/db tables post-Phase-3.
       const [totalUsers] = await db.select({ count: count() }).from(users);
-      const [totalFarms] = await db.select({ count: count() }).from(farmerProfiles);
       const [totalPosts] = await db.select({ count: count() }).from(forumPosts);
-      const [openTickets] = await db.select({ count: count() }).from(supportTickets).where(eq(supportTickets.status, "open"));
-      const [pendingReports] = await db.select({ count: count() }).from(userReports).where(eq(userReports.status, "pending"));
-      const [pendingVerifications] = await db.select({ count: count() }).from(farmerProfiles).where(eq(farmerProfiles.verificationStatus, "pending"));
-      const [pendingDetections] = await db.select({ count: count() }).from(diseaseDetections).where(eq(diseaseDetections.status, "pending"));
-      const [totalAiInteractions] = await db.select({ count: count() }).from(aiInteractions);
+      const [flaggedPosts] = await db.select({ count: count() }).from(forumPosts).where(eq(forumPosts.isFlagged, true));
+      const [unreadEmails] = await db.select({ count: count() }).from(supportEmails).where(eq(supportEmails.status, "unread"));
+      const [pendingContentReports] = await db.select({ count: count() }).from(contentReports).where(eq(contentReports.status, "pending"));
+      const [pendingVerifications] = await db.select({ count: count() }).from(verificationRequests).where(eq(verificationRequests.badgeStatus, "pending_review"));
+      const [activeDetections] = await db.select({ count: count() }).from(diseaseDetections).where(eq(diseaseDetections.status, "active"));
+      const [totalAdvice] = await db.select({ count: count() }).from(aiAdviceHistory);
+      const [totalConversations] = await db.select({ count: count() }).from(copilotConversations);
 
       const recentUsers = await db.select().from(users).orderBy(desc(users.createdAt)).limit(5);
-      const recentTickets = await db.select().from(supportTickets).orderBy(desc(supportTickets.createdAt)).limit(5);
-      const recentLogs = await db.select().from(activityLogs).orderBy(desc(activityLogs.createdAt)).limit(10);
+      const recentEmails = await db.select().from(supportEmails).orderBy(desc(supportEmails.receivedAt)).limit(5);
+      const recentAuditLogs = await db.select().from(adminAuditLogs).orderBy(desc(adminAuditLogs.createdAt)).limit(10);
 
       return {
         stats: {
           totalUsers: totalUsers?.count ?? 0,
-          totalFarms: totalFarms?.count ?? 0,
           totalPosts: totalPosts?.count ?? 0,
-          openTickets: openTickets?.count ?? 0,
-          pendingReports: pendingReports?.count ?? 0,
+          flaggedPosts: flaggedPosts?.count ?? 0,
+          unreadEmails: unreadEmails?.count ?? 0,
+          pendingContentReports: pendingContentReports?.count ?? 0,
           pendingVerifications: pendingVerifications?.count ?? 0,
-          pendingDetections: pendingDetections?.count ?? 0,
-          totalAiInteractions: totalAiInteractions?.count ?? 0,
+          activeDetections: activeDetections?.count ?? 0,
+          totalAdvice: totalAdvice?.count ?? 0,
+          totalConversations: totalConversations?.count ?? 0,
         },
         recentUsers,
-        recentTickets,
-        recentLogs,
+        recentEmails,
+        recentAuditLogs,
       };
     }),
 
@@ -129,22 +122,77 @@ export const appRouter = router({
       }),
 
     updateUserRole: adminProcedure
-      .input(z.object({ userId: z.number(), role: z.enum(["user", "admin"]) }))
-      .mutation(async ({ input, ctx }) => {
+      .input(z.object({ userId: z.number(), role: z.enum(["user", "admin", "moderator"]) }))
+      .mutation(async ({ ctx, input }) => {
+        // Phase 5 hardening: self-promotion guard + last-admin protection.
+        // Admins cannot change their own role (prevents accidental lock-out)
+        // and we refuse to demote the last admin in the system (prevents
+        // accidental admin-less state requiring break-glass recovery).
+        // Self-check first (no DB needed; fast-fails tests).
+        if (input.userId === ctx.user.id) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "You cannot change your own role. Ask another admin.",
+          });
+        }
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+        const [prev] = await db.select({ role: users.role }).from(users).where(eq(users.id, input.userId)).limit(1);
+        if (!prev) throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+        if (prev.role === "admin" && input.role !== "admin") {
+          const [adminCount] = await db.select({ count: count() }).from(users).where(eq(users.role, "admin"));
+          if ((adminCount?.count ?? 0) <= 1) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "Cannot demote the last admin. Promote another user to admin first.",
+            });
+          }
+        }
         await db.update(users).set({ role: input.role }).where(eq(users.id, input.userId));
-        await logAction(ctx.user.id, `Set user role to ${input.role}`, "user", input.userId);
-        return { success: true };
+        await db.insert(adminAuditLogs).values({
+          adminEmail: getActorEmail(ctx),
+          action: "user_role_updated",
+          targetType: "user",
+          targetId: input.userId,
+          details: JSON.stringify({ oldRole: prev.role, newRole: input.role }),
+          ipAddress: getIpAddress(ctx.req),
+        });
+        return { success: true, oldRole: prev.role, newRole: input.role };
       }),
 
     deleteUser: adminProcedure
       .input(z.object({ userId: z.number() }))
-      .mutation(async ({ input, ctx }) => {
+      .mutation(async ({ ctx, input }) => {
+        // Phase 5 hardening: cannot delete self; cannot delete last admin.
+        // Self-check first (no DB needed).
+        if (input.userId === ctx.user.id) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "You cannot delete your own account.",
+          });
+        }
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+        const [prev] = await db.select({ email: users.email, name: users.name, role: users.role }).from(users).where(eq(users.id, input.userId)).limit(1);
+        if (!prev) throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+        if (prev.role === "admin") {
+          const [adminCount] = await db.select({ count: count() }).from(users).where(eq(users.role, "admin"));
+          if ((adminCount?.count ?? 0) <= 1) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "Cannot delete the last admin. Promote another user to admin first.",
+            });
+          }
+        }
         await db.delete(users).where(eq(users.id, input.userId));
-        await logAction(ctx.user.id, "Deleted user", "user", input.userId);
+        await db.insert(adminAuditLogs).values({
+          adminEmail: getActorEmail(ctx),
+          action: "user_deleted",
+          targetType: "user",
+          targetId: input.userId,
+          details: JSON.stringify({ deletedEmail: prev?.email ?? null, deletedName: prev?.name ?? null }),
+          ipAddress: getIpAddress(ctx.req),
+        });
         return { success: true };
       }),
 
@@ -653,51 +701,6 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    // ── Farms ──────────────────────────────────────────────────────────────
-    getFarms: adminProcedure
-      .input(z.object({
-        search: z.string().optional(),
-        verificationStatus: z.enum(["pending", "approved", "rejected", "all"]).default("all"),
-        page: z.number().default(1),
-        limit: z.number().default(20),
-      }))
-      .query(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const offset = (input.page - 1) * input.limit;
-        const conditions = [];
-        if (input.search) {
-          conditions.push(or(
-            like(farmerProfiles.farmName, `%${input.search}%`),
-            like(farmerProfiles.location, `%${input.search}%`),
-            like(farmerProfiles.primaryCrop, `%${input.search}%`)
-          ));
-        }
-        if (input.verificationStatus !== "all") {
-          conditions.push(eq(farmerProfiles.verificationStatus, input.verificationStatus));
-        }
-        const where = conditions.length > 0 ? and(...conditions) : undefined;
-        const rows = await db.select().from(farmerProfiles).where(where).orderBy(desc(farmerProfiles.createdAt)).limit(input.limit).offset(offset);
-        const [total] = await db.select({ count: count() }).from(farmerProfiles).where(where);
-        return { farms: rows, total: total?.count ?? 0 };
-      }),
-
-    updateVerification: adminProcedure
-      .input(z.object({
-        farmId: z.number(),
-        status: z.enum(["approved", "rejected"]),
-        notes: z.string().optional(),
-      }))
-      .mutation(async ({ input, ctx }) => {
-        const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db.update(farmerProfiles)
-          .set({ verificationStatus: input.status, isVerified: input.status === "approved" })
-          .where(eq(farmerProfiles.id, input.farmId));
-        await logAction(ctx.user.id, `Verification ${input.status}`, "farm", input.farmId, { notes: input.notes });
-        return { success: true };
-      }),
-
     // ── Community / Posts (canonical @betterfarm/db.forumPosts) ────────────
     // Reads/writes canonical forumPosts. Every mutation writes adminAuditLogs
     // (canonical) — admin-local activityLogs is no longer the audit destination
@@ -842,258 +845,414 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    // ── Marketplace ────────────────────────────────────────────────────────
-    getListings: adminProcedure
-      .input(z.object({
-        search: z.string().optional(),
-        status: z.enum(["active", "sold", "removed", "pending", "all"]).default("all"),
-        page: z.number().default(1),
-        limit: z.number().default(20),
-      }))
+    // ── Reports (canonical contentReports + messageReports) ─────────────────
+    // Reads/writes canonical @betterfarm/db.contentReports + messageReports.
+    // Admin-local userReports is orphaned (Phase 4 cleanup). verificationFlags
+    // is a different concept (system anomaly flags) handled by Verification flow.
+
+    listContentReports: adminProcedure
+      .input(
+        z.object({
+          status: z.enum(["all", "pending", "reviewed", "dismissed", "action_taken"]).default("pending"),
+          contentType: z.enum(["all", "post", "comment"]).default("all"),
+          page: z.number().int().min(1).default(1),
+          limit: z.number().int().min(1).max(100).default(20),
+        }),
+      )
       .query(async ({ input }) => {
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
         const offset = (input.page - 1) * input.limit;
         const conditions = [];
-        if (input.search) conditions.push(or(like(marketplaceListings.title, `%${input.search}%`), like(marketplaceListings.description, `%${input.search}%`)));
-        if (input.status !== "all") conditions.push(eq(marketplaceListings.status, input.status));
+        if (input.status !== "all") conditions.push(eq(contentReports.status, input.status));
+        if (input.contentType !== "all") conditions.push(eq(contentReports.contentType, input.contentType));
         const where = conditions.length > 0 ? and(...conditions) : undefined;
-        const rows = await db.select().from(marketplaceListings).where(where).orderBy(desc(marketplaceListings.createdAt)).limit(input.limit).offset(offset);
-        const [total] = await db.select({ count: count() }).from(marketplaceListings).where(where);
-        return { listings: rows, total: total?.count ?? 0 };
-      }),
-
-    removeListing: adminProcedure
-      .input(z.object({ listingId: z.number(), reason: z.string() }))
-      .mutation(async ({ input, ctx }) => {
-        const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db.update(marketplaceListings).set({ isRemoved: true, status: "removed", removedReason: input.reason }).where(eq(marketplaceListings.id, input.listingId));
-        await logAction(ctx.user.id, "Removed listing", "listing", input.listingId, { reason: input.reason });
-        return { success: true };
-      }),
-
-    restoreListing: adminProcedure
-      .input(z.object({ listingId: z.number() }))
-      .mutation(async ({ input, ctx }) => {
-        const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db.update(marketplaceListings).set({ isRemoved: false, status: "active", removedReason: null }).where(eq(marketplaceListings.id, input.listingId));
-        await logAction(ctx.user.id, "Restored listing", "listing", input.listingId);
-        return { success: true };
-      }),
-
-    // ── Reports ────────────────────────────────────────────────────────────
-    getReports: adminProcedure
-      .input(z.object({
-        status: z.enum(["pending", "resolved", "dismissed", "all"]).default("all"),
-        page: z.number().default(1),
-        limit: z.number().default(20),
-      }))
-      .query(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const offset = (input.page - 1) * input.limit;
-        const conditions = input.status !== "all" ? [eq(userReports.status, input.status)] : [];
-        const where = conditions.length > 0 ? and(...conditions) : undefined;
-        const rows = await db.select().from(userReports).where(where).orderBy(desc(userReports.createdAt)).limit(input.limit).offset(offset);
-        const [total] = await db.select({ count: count() }).from(userReports).where(where);
+        const rows = await db
+          .select()
+          .from(contentReports)
+          .where(where)
+          .orderBy(desc(contentReports.createdAt))
+          .limit(input.limit)
+          .offset(offset);
+        const [total] = await db.select({ count: count() }).from(contentReports).where(where);
         return { reports: rows, total: total?.count ?? 0 };
       }),
 
-    resolveReport: adminProcedure
-      .input(z.object({ reportId: z.number(), resolution: z.string() }))
-      .mutation(async ({ input, ctx }) => {
+    listMessageReports: adminProcedure
+      .input(
+        z.object({
+          status: z.enum(["all", "pending", "reviewed", "dismissed", "action_taken"]).default("pending"),
+          page: z.number().int().min(1).default(1),
+          limit: z.number().int().min(1).max(100).default(20),
+        }),
+      )
+      .query(async ({ input }) => {
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db.update(userReports).set({ status: "resolved", resolvedBy: ctx.user.id, resolvedAt: new Date(), resolution: input.resolution }).where(eq(userReports.id, input.reportId));
-        await logAction(ctx.user.id, "Resolved report", "report", input.reportId);
-        return { success: true };
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+        const offset = (input.page - 1) * input.limit;
+        const where = input.status === "all" ? undefined : eq(messageReports.status, input.status);
+        const rows = await db
+          .select()
+          .from(messageReports)
+          .where(where)
+          .orderBy(desc(messageReports.createdAt))
+          .limit(input.limit)
+          .offset(offset);
+        const [total] = await db.select({ count: count() }).from(messageReports).where(where);
+        return { reports: rows, total: total?.count ?? 0 };
       }),
 
-    dismissReport: adminProcedure
-      .input(z.object({ reportId: z.number() }))
-      .mutation(async ({ input, ctx }) => {
+    updateContentReportStatus: adminProcedure
+      .input(
+        z.object({
+          id: z.number(),
+          status: z.enum(["pending", "reviewed", "dismissed", "action_taken"]),
+          reviewNote: z.string().max(2000).nullish(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db.update(userReports).set({ status: "dismissed", resolvedBy: ctx.user.id, resolvedAt: new Date() }).where(eq(userReports.id, input.reportId));
-        await logAction(ctx.user.id, "Dismissed report", "report", input.reportId);
-        return { success: true };
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+        const [existing] = await db
+          .select({ status: contentReports.status })
+          .from(contentReports)
+          .where(eq(contentReports.id, input.id))
+          .limit(1);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Content report not found" });
+        const oldStatus = existing.status;
+        await db
+          .update(contentReports)
+          .set({
+            status: input.status,
+            reviewedBy: ctx.user.id,
+            reviewNote: input.reviewNote ?? null,
+          })
+          .where(eq(contentReports.id, input.id));
+        const action =
+          input.status === "dismissed"
+            ? "content_report_dismissed"
+            : input.status === "action_taken"
+              ? "content_report_action_taken"
+              : "content_report_reviewed";
+        await db.insert(adminAuditLogs).values(
+          buildReportAuditEntry({
+            adminEmail: getActorEmail(ctx),
+            action,
+            targetType: "content_report",
+            targetReportId: input.id,
+            details: { oldStatus, newStatus: input.status, reviewNote: input.reviewNote ?? null },
+            ipAddress: getIpAddress(ctx.req),
+          }),
+        );
+        return { success: true, oldStatus, newStatus: input.status };
       }),
 
-    // ── Support Tickets ────────────────────────────────────────────────────
-    getTickets: adminProcedure
+    updateMessageReportStatus: adminProcedure
+      .input(
+        z.object({
+          id: z.number(),
+          status: z.enum(["pending", "reviewed", "dismissed", "action_taken"]),
+          reviewNote: z.string().max(2000).nullish(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+        const [existing] = await db
+          .select({ status: messageReports.status })
+          .from(messageReports)
+          .where(eq(messageReports.id, input.id))
+          .limit(1);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Message report not found" });
+        const oldStatus = existing.status;
+        await db
+          .update(messageReports)
+          .set({ status: input.status })
+          .where(eq(messageReports.id, input.id));
+        const action =
+          input.status === "dismissed"
+            ? "message_report_dismissed"
+            : input.status === "action_taken"
+              ? "message_report_action_taken"
+              : "message_report_reviewed";
+        await db.insert(adminAuditLogs).values(
+          buildReportAuditEntry({
+            adminEmail: getActorEmail(ctx),
+            action,
+            targetType: "message_report",
+            targetReportId: input.id,
+            details: { oldStatus, newStatus: input.status, reviewNote: input.reviewNote ?? null },
+            ipAddress: getIpAddress(ctx.req),
+          }),
+        );
+        return { success: true, oldStatus, newStatus: input.status };
+      }),
+
+    // ── Disease Detection (canonical @betterfarm/db.diseaseDetections) ──────
+    // Status enum: active | resolved | ignored. No reviewedBy/reviewNotes columns
+    // exist — review context is captured via adminAuditLogs.details.
+
+    listDiseaseDetections: adminProcedure
       .input(z.object({
-        status: z.enum(["open", "in_progress", "resolved", "closed", "all"]).default("all"),
-        priority: z.enum(["low", "medium", "high", "urgent", "all"]).default("all"),
-        page: z.number().default(1),
-        limit: z.number().default(20),
+        status: z.enum(["all", "active", "resolved", "ignored"]).default("active"),
+        severity: z.enum(["all", "low", "medium", "high"]).default("all"),
+        cropName: z.string().optional(),
+        page: z.number().int().min(1).default(1),
+        limit: z.number().int().min(1).max(100).default(20),
       }))
       .query(async ({ input }) => {
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
         const offset = (input.page - 1) * input.limit;
         const conditions = [];
-        if (input.status !== "all") conditions.push(eq(supportTickets.status, input.status));
-        if (input.priority !== "all") conditions.push(eq(supportTickets.priority, input.priority));
+        if (input.status !== "all") conditions.push(eq(diseaseDetections.status, input.status));
+        if (input.severity !== "all") conditions.push(eq(diseaseDetections.severity, input.severity));
+        if (input.cropName) conditions.push(like(diseaseDetections.cropName, `%${input.cropName}%`));
         const where = conditions.length > 0 ? and(...conditions) : undefined;
-        const rows = await db.select().from(supportTickets).where(where).orderBy(desc(supportTickets.createdAt)).limit(input.limit).offset(offset);
-        const [total] = await db.select({ count: count() }).from(supportTickets).where(where);
-        return { tickets: rows, total: total?.count ?? 0 };
-      }),
-
-    updateTicket: adminProcedure
-      .input(z.object({
-        ticketId: z.number(),
-        status: z.enum(["open", "in_progress", "resolved", "closed"]).optional(),
-        adminNotes: z.string().optional(),
-        priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
-      }))
-      .mutation(async ({ input, ctx }) => {
-        const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const updates: Record<string, unknown> = {};
-        if (input.status) { updates.status = input.status; if (input.status === "resolved") updates.resolvedAt = new Date(); }
-        if (input.adminNotes !== undefined) updates.adminNotes = input.adminNotes;
-        if (input.priority) updates.priority = input.priority;
-        await db.update(supportTickets).set(updates as any).where(eq(supportTickets.id, input.ticketId));
-        await logAction(ctx.user.id, `Updated ticket status to ${input.status ?? "notes"}`, "ticket", input.ticketId);
-        return { success: true };
-      }),
-
-    // ── Disease Detection ──────────────────────────────────────────────────
-    getDetections: adminProcedure
-      .input(z.object({
-        status: z.enum(["pending", "reviewed", "resolved", "all"]).default("all"),
-        page: z.number().default(1),
-        limit: z.number().default(20),
-      }))
-      .query(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const offset = (input.page - 1) * input.limit;
-        const conditions = input.status !== "all" ? [eq(diseaseDetections.status, input.status)] : [];
-        const where = conditions.length > 0 ? and(...conditions) : undefined;
-        const rows = await db.select().from(diseaseDetections).where(where).orderBy(desc(diseaseDetections.createdAt)).limit(input.limit).offset(offset);
+        const rows = await db
+          .select()
+          .from(diseaseDetections)
+          .where(where)
+          .orderBy(desc(diseaseDetections.createdAt))
+          .limit(input.limit)
+          .offset(offset);
         const [total] = await db.select({ count: count() }).from(diseaseDetections).where(where);
         return { detections: rows, total: total?.count ?? 0 };
       }),
 
-    resolveDetection: adminProcedure
-      .input(z.object({ detectionId: z.number(), notes: z.string() }))
-      .mutation(async ({ input, ctx }) => {
+    getDiseaseDetection: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db.update(diseaseDetections).set({ status: "resolved", reviewedBy: ctx.user.id, reviewNotes: input.notes }).where(eq(diseaseDetections.id, input.detectionId));
-        await logAction(ctx.user.id, "Resolved disease detection", "detection", input.detectionId);
-        return { success: true };
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+        const [row] = await db
+          .select()
+          .from(diseaseDetections)
+          .where(eq(diseaseDetections.id, input.id))
+          .limit(1);
+        if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "Detection not found" });
+        return row;
       }),
 
-    // ── AI Interactions ────────────────────────────────────────────────────
-    getAiInteractions: adminProcedure
+    updateDiseaseDetectionStatus: adminProcedure
       .input(z.object({
-        page: z.number().default(1),
-        limit: z.number().default(20),
-        wasSuccessful: z.boolean().optional(),
+        id: z.number(),
+        status: z.enum(["active", "resolved", "ignored"]),
+        reviewNote: z.string().max(2000).nullish(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+        const [existing] = await db
+          .select({ status: diseaseDetections.status })
+          .from(diseaseDetections)
+          .where(eq(diseaseDetections.id, input.id))
+          .limit(1);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Detection not found" });
+        const oldStatus = existing.status;
+        await db
+          .update(diseaseDetections)
+          .set({ status: input.status })
+          .where(eq(diseaseDetections.id, input.id));
+        const action =
+          input.status === "resolved" ? "disease_detection_resolved" :
+          input.status === "ignored" ? "disease_detection_ignored" :
+          "disease_detection_reopened";
+        await db.insert(adminAuditLogs).values(
+          buildDiseaseAuditEntry({
+            adminEmail: getActorEmail(ctx),
+            action,
+            targetDetectionId: input.id,
+            details: { oldStatus, newStatus: input.status, reviewNote: input.reviewNote ?? null },
+            ipAddress: getIpAddress(ctx.req),
+          }),
+        );
+        return { success: true, oldStatus, newStatus: input.status };
+      }),
+
+    // ── AI Oversight (canonical aiAdviceHistory + copilotConversations + aiFeedback) ──
+    // Read-only observability. No mutations — canonical schema doesn't track
+    // latency/tokens/success; that's a separate concern handled by apps/main's
+    // telemetry pipeline (not exposed to admin in Phase 3d).
+
+    listAiAdviceHistory: adminProcedure
+      .input(z.object({
+        cropType: z.string().optional(),
+        page: z.number().int().min(1).default(1),
+        limit: z.number().int().min(1).max(100).default(20),
       }))
       .query(async ({ input }) => {
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
         const offset = (input.page - 1) * input.limit;
-        const conditions = input.wasSuccessful !== undefined ? [eq(aiInteractions.wasSuccessful, input.wasSuccessful)] : [];
-        const where = conditions.length > 0 ? and(...conditions) : undefined;
-        const rows = await db.select().from(aiInteractions).where(where).orderBy(desc(aiInteractions.createdAt)).limit(input.limit).offset(offset);
-        const [total] = await db.select({ count: count() }).from(aiInteractions).where(where);
-        const [successCount] = await db.select({ count: count() }).from(aiInteractions).where(eq(aiInteractions.wasSuccessful, true));
-        const [failCount] = await db.select({ count: count() }).from(aiInteractions).where(eq(aiInteractions.wasSuccessful, false));
-        return { interactions: rows, total: total?.count ?? 0, successCount: successCount?.count ?? 0, failCount: failCount?.count ?? 0 };
+        const where = input.cropType ? like(aiAdviceHistory.cropType, `%${input.cropType}%`) : undefined;
+        const rows = await db
+          .select()
+          .from(aiAdviceHistory)
+          .where(where)
+          .orderBy(desc(aiAdviceHistory.createdAt))
+          .limit(input.limit)
+          .offset(offset);
+        const [total] = await db.select({ count: count() }).from(aiAdviceHistory).where(where);
+        return { advice: rows, total: total?.count ?? 0 };
       }),
 
-    // ── Activity Logs ──────────────────────────────────────────────────────
-    getActivityLogs: adminProcedure
+    listCopilotConversations: adminProcedure
       .input(z.object({
-        page: z.number().default(1),
-        limit: z.number().default(30),
+        userId: z.number().optional(),
+        page: z.number().int().min(1).default(1),
+        limit: z.number().int().min(1).max(100).default(20),
+      }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+        const offset = (input.page - 1) * input.limit;
+        const where = input.userId ? eq(copilotConversations.userId, input.userId) : undefined;
+        const rows = await db
+          .select()
+          .from(copilotConversations)
+          .where(where)
+          .orderBy(desc(copilotConversations.createdAt))
+          .limit(input.limit)
+          .offset(offset);
+        const [total] = await db.select({ count: count() }).from(copilotConversations).where(where);
+        return { conversations: rows, total: total?.count ?? 0 };
+      }),
+
+    listAiFeedback: adminProcedure
+      .input(z.object({
+        feedback: z.enum(["all", "positive", "negative"]).default("all"),
+        page: z.number().int().min(1).default(1),
+        limit: z.number().int().min(1).max(100).default(20),
+      }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+        const offset = (input.page - 1) * input.limit;
+        const where = input.feedback === "all" ? undefined : eq(aiFeedback.feedback, input.feedback);
+        const rows = await db
+          .select()
+          .from(aiFeedback)
+          .where(where)
+          .orderBy(desc(aiFeedback.createdAt))
+          .limit(input.limit)
+          .offset(offset);
+        const [total] = await db.select({ count: count() }).from(aiFeedback).where(where);
+        const [positiveCount] = await db.select({ count: count() }).from(aiFeedback).where(eq(aiFeedback.feedback, "positive"));
+        const [negativeCount] = await db.select({ count: count() }).from(aiFeedback).where(eq(aiFeedback.feedback, "negative"));
+        return {
+          feedback: rows,
+          total: total?.count ?? 0,
+          positiveCount: positiveCount?.count ?? 0,
+          negativeCount: negativeCount?.count ?? 0,
+        };
+      }),
+
+    // ── Admin Audit Logs (canonical) ──────────────────────────────────────
+    // Reads canonical adminAuditLogs (the destination for all Phase 1-3 admin
+    // mutations). The admin-local activityLogs table is orphaned in Phase 4.
+
+    listAdminAuditLogs: adminProcedure
+      .input(z.object({
         targetType: z.string().optional(),
+        action: z.string().optional(),
+        adminEmail: z.string().optional(),
+        page: z.number().int().min(1).default(1),
+        limit: z.number().int().min(1).max(100).default(30),
       }))
       .query(async ({ input }) => {
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
         const offset = (input.page - 1) * input.limit;
-        const conditions = input.targetType ? [eq(activityLogs.targetType, input.targetType)] : [];
+        const conditions = [];
+        if (input.targetType) conditions.push(eq(adminAuditLogs.targetType, input.targetType));
+        if (input.action) conditions.push(eq(adminAuditLogs.action, input.action));
+        if (input.adminEmail) conditions.push(like(adminAuditLogs.adminEmail, `%${input.adminEmail}%`));
         const where = conditions.length > 0 ? and(...conditions) : undefined;
-        const rows = await db.select().from(activityLogs).where(where).orderBy(desc(activityLogs.createdAt)).limit(input.limit).offset(offset);
-        const [total] = await db.select({ count: count() }).from(activityLogs).where(where);
+        const rows = await db
+          .select()
+          .from(adminAuditLogs)
+          .where(where)
+          .orderBy(desc(adminAuditLogs.createdAt))
+          .limit(input.limit)
+          .offset(offset);
+        const [total] = await db.select({ count: count() }).from(adminAuditLogs).where(where);
         return { logs: rows, total: total?.count ?? 0 };
       }),
 
-    // ── Feature Flags ──────────────────────────────────────────────────────
-    getFeatureFlags: adminProcedure.query(async () => {
+    // ── Feature Flags (canonical, non-operator) ───────────────────────────
+    // Reads/writes canonical @betterfarm/db.featureFlags. The 5 operator
+    // kill-switches (voice_enabled, xtts_allowed, device_tts_allowed,
+    // background_flush_enabled, learning_telemetry_enabled) are filtered OUT
+    // since they're managed on the Operator page. This page shows the
+    // insurance/AI/data-ingestion product flags only.
+
+    listNonOperatorFlags: adminProcedure.query(async () => {
       const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      return db.select().from(featureFlags).orderBy(featureFlags.name);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+      const OPERATOR_FLAG_KEYS = [
+        "voice_enabled",
+        "xtts_allowed",
+        "device_tts_allowed",
+        "background_flush_enabled",
+        "learning_telemetry_enabled",
+      ];
+      const all = await db.select().from(featureFlags).orderBy(featureFlags.flagKey);
+      return all.filter((f) => !OPERATOR_FLAG_KEYS.includes(f.flagKey));
     }),
 
-    toggleFeatureFlag: adminProcedure
-      .input(z.object({ flagId: z.number(), isEnabled: z.boolean() }))
-      .mutation(async ({ input, ctx }) => {
+    setNonOperatorFlag: adminProcedure
+      .input(z.object({ flagKey: z.string().min(1).max(100), flagValue: z.boolean() }))
+      .mutation(async ({ ctx, input }) => {
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db.update(featureFlags).set({ isEnabled: input.isEnabled, updatedBy: ctx.user.id }).where(eq(featureFlags.id, input.flagId));
-        await logAction(ctx.user.id, `${input.isEnabled ? "Enabled" : "Disabled"} feature flag`, "flag", input.flagId);
-        return { success: true };
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+        const OPERATOR_FLAG_KEYS = [
+          "voice_enabled",
+          "xtts_allowed",
+          "device_tts_allowed",
+          "background_flush_enabled",
+          "learning_telemetry_enabled",
+        ];
+        if (OPERATOR_FLAG_KEYS.includes(input.flagKey)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `'${input.flagKey}' is an operator kill switch — manage from the Operator page, not Settings`,
+          });
+        }
+        const [existing] = await db
+          .select({ flagValue: featureFlags.flagValue })
+          .from(featureFlags)
+          .where(eq(featureFlags.flagKey, input.flagKey))
+          .limit(1);
+        if (!existing) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: `Flag '${input.flagKey}' not found. Seed flags must be added via main app's flag seeding code, not admin.`,
+          });
+        }
+        const oldValue = existing.flagValue;
+        const adminEmail = getActorEmail(ctx);
+        await db
+          .update(featureFlags)
+          .set({ flagValue: input.flagValue, updatedBy: adminEmail })
+          .where(eq(featureFlags.flagKey, input.flagKey));
+        await db.insert(adminAuditLogs).values({
+          adminEmail,
+          action: "feature_flag_toggled",
+          targetType: "feature_flag",
+          targetId: null,
+          details: JSON.stringify({ flagKey: input.flagKey, oldValue, newValue: input.flagValue }),
+          ipAddress: getIpAddress(ctx.req),
+        });
+        return { success: true, oldValue, newValue: input.flagValue };
       }),
 
-    // ── Analytics ─────────────────────────────────────────────────────────
-    getRevenue: adminProcedure.query(async () => {
-      const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-
-      const [totalVal] = await db.execute(sql`SELECT COALESCE(SUM(price), 0) as total FROM marketplace_listings WHERE isRemoved = 0`) as unknown as any[];
-      const [activeCount] = await db.execute(sql`SELECT COUNT(*) as count FROM marketplace_listings WHERE status = 'active' AND isRemoved = 0`) as unknown as any[];
-      const [avgPrice] = await db.execute(sql`SELECT COALESCE(AVG(price), 0) as avg FROM marketplace_listings WHERE isRemoved = 0`) as unknown as any[];
-      const [verifiedFarmers] = await db.execute(sql`SELECT COUNT(*) as count FROM farmer_profiles WHERE verificationStatus = 'approved'`) as unknown as any[];
-      const byCategory = await db.execute(sql`SELECT category, COUNT(*) as count FROM marketplace_listings WHERE isRemoved = 0 GROUP BY category ORDER BY count DESC LIMIT 10`) as unknown as any[];
-      const byStatus = await db.execute(sql`SELECT status, COUNT(*) as count FROM marketplace_listings GROUP BY status`) as unknown as any[];
-
-      return {
-        totalListingsValue: Number((totalVal as any[])[0]?.total ?? 0),
-        activeListings: Number((activeCount as any[])[0]?.count ?? 0),
-        avgListingPrice: Math.round(Number((avgPrice as any[])[0]?.avg ?? 0)),
-        verifiedFarmers: Number((verifiedFarmers as any[])[0]?.count ?? 0),
-        listingsByCategory: (byCategory[0] as any[]),
-        listingsByStatus: (byStatus[0] as any[]),
-      };
-    }),
-
-    getAnalytics: adminProcedure.query(async () => {
-      const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-
-      const usersByMonth = await db.execute(sql`
-        SELECT DATE_FORMAT(createdAt, '%Y-%m') as month, COUNT(*) as count
-        FROM users
-        GROUP BY month ORDER BY month DESC LIMIT 12
-      `);
-      const postsByMonth = await db.execute(sql`
-        SELECT DATE_FORMAT(createdAt, '%Y-%m') as month, COUNT(*) as count
-        FROM forum_posts
-        GROUP BY month ORDER BY month DESC LIMIT 12
-      `);
-      const ticketsByStatus = await db.execute(sql`
-        SELECT status, COUNT(*) as count FROM support_tickets GROUP BY status
-      `);
-      const detectionsBySeverity = await db.execute(sql`
-        SELECT severity, COUNT(*) as count FROM disease_detections GROUP BY severity
-      `);
-
-      return {
-        usersByMonth: (usersByMonth[0] as unknown as any[]).reverse(),
-        postsByMonth: (postsByMonth[0] as unknown as any[]).reverse(),
-        ticketsByStatus: ticketsByStatus[0] as unknown as any[],
-        detectionsBySeverity: detectionsBySeverity[0] as unknown as any[],
-      };
-    }),
+    // Analytics + Revenue + Marketplace + Reports/Tickets/Farms procedures were
+    // removed in Phase 4c. Their pages now show "coming soon" stubs (Marketplace,
+    // Revenue, Analytics) or redirect (Farms → Verification). The canonical
+    // replacements: listContentReports/listMessageReports (Reports), listSupportEmails
+    // (Support), listVerificationRequests (Verification), listDiseaseDetections
+    // (DiseaseDetection), getDashboardStats (Dashboard, SystemHealth).
 
     operator: operatorRouter,
   }),

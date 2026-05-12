@@ -19,7 +19,6 @@ import {
   Trash2,
   RotateCcw,
   MessageSquare,
-  ShoppingCart,
   Flag,
   ShieldOff,
   ImageIcon,
@@ -29,11 +28,10 @@ import { formatDistanceToNow } from "date-fns";
 type ActionKind =
   | { kind: "remove-post"; id: number; title: string }
   | { kind: "flag-post"; id: number; title: string }
-  | { kind: "remove-listing"; id: number; title: string }
   | null;
 
 export default function Moderation() {
-  const [tab, setTab] = useState<"posts" | "listings" | "flagged">("flagged");
+  const [tab, setTab] = useState<"posts" | "flagged">("flagged");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [action, setAction] = useState<ActionKind>(null);
@@ -48,10 +46,6 @@ export default function Moderation() {
     { search, page, limit: 20 },
     { enabled: tab === "posts" },
   );
-  const { data: listingsData, isLoading: listingsLoading } = trpc.admin.getListings.useQuery(
-    { search, status: "all", page, limit: 20 },
-    { enabled: tab === "listings" },
-  );
 
   const closeAction = () => {
     setAction(null);
@@ -60,7 +54,6 @@ export default function Moderation() {
   const onSettled = () => {
     void utils.admin.getPosts.invalidate();
     void utils.admin.getFlaggedPosts.invalidate();
-    void utils.admin.getListings.invalidate();
     closeAction();
   };
 
@@ -80,22 +73,9 @@ export default function Moderation() {
     onSuccess: () => { toast.success("Flag cleared"); onSettled(); },
     onError: (e) => toast.error(e.message),
   });
-  const removeListing = trpc.admin.removeListing.useMutation({
-    onSuccess: () => { toast.success("Listing removed"); onSettled(); },
-    onError: (e) => toast.error(e.message),
-  });
-  const restoreListing = trpc.admin.restoreListing.useMutation({
-    onSuccess: () => { toast.success("Listing restored"); onSettled(); },
-    onError: (e) => toast.error(e.message),
-  });
 
   const isPending =
-    removePost.isPending ||
-    restorePost.isPending ||
-    flagPost.isPending ||
-    unflagPost.isPending ||
-    removeListing.isPending ||
-    restoreListing.isPending;
+    removePost.isPending || restorePost.isPending || flagPost.isPending || unflagPost.isPending;
 
   const flaggedQueue = flaggedData?.posts ?? [];
 
@@ -104,14 +84,14 @@ export default function Moderation() {
       <div>
         <h1 className="text-2xl font-bold">Moderation</h1>
         <p className="text-muted-foreground text-sm mt-1">
-          Triage flagged content, remove violations, restore mistakes. Every action audit-logged.
+          Triage flagged forum content. Every action audit-logged.
         </p>
       </div>
 
       <Tabs
         value={tab}
         onValueChange={(v) => {
-          setTab(v as "posts" | "listings" | "flagged");
+          setTab(v as "posts" | "flagged");
           setPage(1);
           setSearch("");
         }}
@@ -125,7 +105,6 @@ export default function Moderation() {
               )}
             </TabsTrigger>
             <TabsTrigger value="posts">All posts</TabsTrigger>
-            <TabsTrigger value="listings">Marketplace</TabsTrigger>
           </TabsList>
           {tab !== "flagged" && (
             <div className="relative flex-1 sm:max-w-xs">
@@ -195,71 +174,6 @@ export default function Moderation() {
             </CardContent>
           </Card>
         </TabsContent>
-
-        <TabsContent value="listings">
-          <Card>
-            <CardContent className="pt-4">
-              {listingsLoading && (
-                <div className="space-y-2">
-                  {Array.from({ length: 5 }).map((_, i) => <div key={i} className="h-14 bg-muted animate-pulse rounded" />)}
-                </div>
-              )}
-              {!listingsLoading && (listingsData?.listings.length ?? 0) === 0 && (
-                <p className="text-center text-muted-foreground py-8">No listings.</p>
-              )}
-              <div className="space-y-2">
-                {listingsData?.listings.map((listing) => (
-                  <div
-                    key={listing.id}
-                    className={`flex items-start justify-between p-3 rounded-lg border transition-colors ${
-                      listing.isRemoved ? "border-red-200 bg-red-50/30 dark:bg-red-950/20" : "border-border hover:bg-muted/30"
-                    }`}
-                  >
-                    <div className="flex items-start gap-3 min-w-0">
-                      <div className="w-8 h-8 bg-emerald-50 dark:bg-emerald-950/30 rounded-lg flex items-center justify-center shrink-0 mt-0.5">
-                        <ShoppingCart className="w-4 h-4 text-emerald-600" />
-                      </div>
-                      <div className="min-w-0">
-                        <p className="font-medium text-sm truncate">{listing.title}</p>
-                        <div className="flex items-center gap-2 mt-0.5 flex-wrap text-xs text-muted-foreground">
-                          {listing.price && <span className="font-medium text-green-700">₹{listing.price.toLocaleString()}</span>}
-                          {listing.category && <span>· {listing.category}</span>}
-                          <span>· {formatDistanceToNow(new Date(listing.createdAt))} ago</span>
-                          {listing.isRemoved && <Badge variant="destructive" className="text-xs">Removed</Badge>}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="shrink-0 ml-2">
-                      {listing.isRemoved ? (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 px-2 text-green-600 hover:bg-green-50 dark:hover:bg-green-950/30"
-                          onClick={() => restoreListing.mutate({ listingId: listing.id })}
-                          disabled={isPending}
-                        >
-                          <RotateCcw className="w-3 h-3" />
-                          <span className="ml-1 hidden sm:inline text-xs">Restore</span>
-                        </Button>
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 px-2 text-destructive hover:bg-destructive/10"
-                          onClick={() => setAction({ kind: "remove-listing", id: listing.id, title: listing.title })}
-                          disabled={isPending}
-                        >
-                          <Trash2 className="w-3 h-3" />
-                          <span className="ml-1 hidden sm:inline text-xs">Remove</span>
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
       </Tabs>
 
       <Dialog open={action !== null} onOpenChange={(open) => !open && closeAction()}>
@@ -268,7 +182,6 @@ export default function Moderation() {
             <DialogTitle>
               {action?.kind === "remove-post" && `Remove "${action.title}"`}
               {action?.kind === "flag-post" && `Flag "${action.title}"`}
-              {action?.kind === "remove-listing" && `Remove "${action.title}"`}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-2">
@@ -291,8 +204,6 @@ export default function Moderation() {
                   removePost.mutate({ postId: action.id, reason: reason.trim() });
                 } else if (action.kind === "flag-post") {
                   flagPost.mutate({ postId: action.id, reason: reason.trim() });
-                } else if (action.kind === "remove-listing") {
-                  removeListing.mutate({ listingId: action.id, reason: reason.trim() });
                 }
               }}
             >

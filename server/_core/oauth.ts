@@ -1,4 +1,4 @@
-import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
+import { ADMIN_SESSION_MS, COOKIE_NAME } from "@shared/const";
 import type { Express, Request, Response } from "express";
 import * as db from "../db";
 import { getSessionCookieOptions } from "./cookies";
@@ -20,6 +20,21 @@ export function registerOAuthRoutes(app: Express) {
     }
 
     try {
+      // Phase 5 hardening: validate state's redirect URI against the request's
+      // own host before exchanging code. Mitigates open-redirect / code leak.
+      const requestHost = req.get("host");
+      if (!requestHost) {
+        res.status(400).json({ error: "host header is required" });
+        return;
+      }
+      try {
+        sdk.decodeAndValidateState(state, requestHost);
+      } catch (err) {
+        console.warn("[OAuth] Rejected state for redirect-host mismatch:", err);
+        res.status(403).json({ error: "OAuth state validation failed" });
+        return;
+      }
+
       const tokenResponse = await sdk.exchangeCodeForToken(code, state);
       const userInfo = await sdk.getUserInfo(tokenResponse.accessToken);
 
@@ -36,13 +51,16 @@ export function registerOAuthRoutes(app: Express) {
         lastSignedIn: new Date(),
       });
 
+      // Admin sessions are 8h sliding. Production readiness: an admin laptop
+      // left unattended must not stay logged in for a year. Re-auth is cheap;
+      // an attacker with a stolen cookie is not.
       const sessionToken = await sdk.createSessionToken(userInfo.openId, {
         name: userInfo.name || "",
-        expiresInMs: ONE_YEAR_MS,
+        expiresInMs: ADMIN_SESSION_MS,
       });
 
       const cookieOptions = getSessionCookieOptions(req);
-      res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+      res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ADMIN_SESSION_MS });
 
       res.redirect(302, "/");
     } catch (error) {
