@@ -20,6 +20,8 @@ import Analytics from "./pages/Analytics";
 import Moderation from "./pages/Moderation";
 import Revenue from "./pages/Revenue";
 import SystemHealth from "./pages/SystemHealth";
+import Health from "./pages/Health";
+import HealthDetail from "./pages/HealthDetail";
 import Verification from "./pages/Verification";
 import Operator from "./pages/Operator";
 
@@ -42,6 +44,8 @@ function Router() {
         <Route path="/moderation" component={Moderation} />
         <Route path="/revenue" component={Revenue} />
         <Route path="/system-health" component={SystemHealth} />
+        <Route path="/health" component={Health} />
+        <Route path="/health/:fingerprint" component={HealthDetail} />
         <Route path="/verification" component={Verification} />
         <Route path="/operator" component={Operator} />
         <Route component={NotFound} />

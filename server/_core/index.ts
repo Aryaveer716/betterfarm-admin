@@ -6,6 +6,7 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
+import { adminChatStreamHandler } from "../admin-chat-stream-route";
 import { serveStatic, setupVite } from "./vite";
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -35,6 +36,10 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
+  // Admin AI chat streaming endpoint (SSE). Mounted OUTSIDE tRPC because
+  // tRPC v11 streaming would require a websocket transport this app
+  // doesn't have. Must come BEFORE Vite/static fallbacks below.
+  app.post("/api/admin/chat/stream", adminChatStreamHandler);
   // tRPC API
   app.use(
     "/api/trpc",

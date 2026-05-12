@@ -1,7 +1,9 @@
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
+import { adminHealthRouter } from "./admin-health-router";
 import { operatorRouter } from "./operator-router";
+import { adminChatRouter } from "./admin-chat-router";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -53,6 +55,8 @@ export const appRouter = router({
       return { success: true } as const;
     }),
   }),
+
+  adminHealth: adminHealthRouter,
 
   admin: router({
     // ── Dashboard ──────────────────────────────────────────────────────────
@@ -1255,6 +1259,12 @@ export const appRouter = router({
     // (DiseaseDetection), getDashboardStats (Dashboard, SystemHealth).
 
     operator: operatorRouter,
+
+    // ── AI Assistant Panel (OpenRouter) ───────────────────────────────────
+    // admin.chat.send: single-shot chat completion. No streaming, no tool
+    // use, no page-context server-side wiring yet (props accepted on the
+    // input schema for API stability, ignored by this checkpoint).
+    chat: adminChatRouter,
   }),
 });
 

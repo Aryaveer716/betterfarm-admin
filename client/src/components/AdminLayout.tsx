@@ -1,4 +1,7 @@
+import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { AiFab } from "@/components/AiFab";
+import { AiChatPanel } from "@/components/AiChatPanel";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -66,6 +69,7 @@ const navSections = [
       { icon: SlidersHorizontal, label: "Operator", path: "/operator" },
       { icon: HelpCircle, label: "Support", path: "/support" },
       { icon: HeartPulse, label: "System Health", path: "/system-health" },
+      { icon: Activity, label: "App Health", path: "/health" },
       { icon: Activity, label: "Activity Logs", path: "/activity-logs" },
       { icon: Settings, label: "Settings", path: "/settings" },
     ],
@@ -159,6 +163,7 @@ function AdminSidebarContent() {
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const { loading, user } = useAuth();
+  const [aiChatOpen, setAiChatOpen] = useState(false);
 
   if (loading) return <DashboardLayoutSkeleton />;
 
@@ -200,6 +205,12 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         </header>
         <main className="flex-1 p-6">{children}</main>
       </SidebarInset>
+
+      {/* AI assistant — mounted at layout root so it's available on every admin page.
+          AiFab uses position:fixed (escapes flex flow); AiChatPanel renders via Radix
+          Portal to document.body, so neither participates in the sidebar's layout. */}
+      <AiFab onClick={() => setAiChatOpen(true)} />
+      <AiChatPanel open={aiChatOpen} onOpenChange={setAiChatOpen} />
     </SidebarProvider>
   );
 }

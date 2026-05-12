@@ -1,6 +1,7 @@
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { HealthSummaryTile } from "@/components/HealthSummaryTile";
 import {
   Users,
   MessageSquare,
@@ -91,6 +92,7 @@ export default function Dashboard() {
         <StatCard title="Pending Verifications" value={stats?.pendingVerifications ?? 0} icon={CheckCircle} color="bg-emerald-50 text-emerald-600" />
         <StatCard title="Active Detections" value={stats?.activeDetections ?? 0} icon={Bug} color="bg-rose-50 text-rose-600" />
         <StatCard title="AI Conversations" value={stats?.totalConversations ?? 0} icon={Zap} color="bg-indigo-50 text-indigo-600" />
+        <HealthSummaryTile />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
