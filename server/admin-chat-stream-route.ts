@@ -8,6 +8,8 @@ import {
   OPENROUTER_BASE_URL,
   OPENROUTER_HTTP_REFERER,
   OPENROUTER_X_TITLE,
+  GEMINI_BASE_URL,
+  GEMINI_FALLBACK_MODEL,
 } from "./ai/model-config";
 import { tools, executeTool } from "./ai/tool-registry";
 
@@ -32,13 +34,8 @@ interface StreamEvent {
   summary?: string;
 }
 
-function sseWrite(res: ExpressResponse, event: StreamEvent): void {
-  // SSE events: `data: <json>\n\n`. The blank line is the event terminator.
-  res.write(`data: ${JSON.stringify(event)}\n\n`);
-}
-
-/** OpenRouter streaming delta we consume. */
-interface OpenRouterStreamingDelta {
+/** OpenAI/OpenRouter/Gemini-OpenAI streaming delta we consume. */
+interface OpenAICompatibleDelta {
   role?: string;
   content?: string;
   tool_calls?: Array<{
@@ -49,19 +46,12 @@ interface OpenRouterStreamingDelta {
   }>;
 }
 
-/** Accumulated tool call from a streaming pass. */
 interface AccumulatedToolCall {
   id: string;
   name: string;
   arguments: string;
 }
 
-/**
- * The plain OpenAI/OpenRouter "messages" shape — we pass these to the
- * upstream model verbatim. We include `tool_calls` and `tool_call_id` for
- * the multi-turn loop. We don't pin to a vendored type because the API
- * surface is OpenAI-compatible and the shape is stable.
- */
 interface LLMMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
@@ -75,34 +65,79 @@ interface LLMMessage {
 
 const MAX_TOOL_ITERATIONS = 6;
 
+interface ProviderConfig {
+  /** Human-readable provider name used in error messages. */
+  label: string;
+  /** Full chat-completions URL. */
+  url: string;
+  /** Bearer API key. */
+  apiKey: string;
+  /** Model slug to send in body.model. */
+  model: string;
+  /** Optional extra headers (OpenRouter uses HTTP-Referer + X-Title). */
+  extraHeaders?: Record<string, string>;
+}
+
 /**
- * Runs ONE pass against OpenRouter with stream:true. Forwards token deltas
- * to the client via the SSE token event, and accumulates any tool_calls
- * deltas in-place. Returns the final assistant text, the list of tool
- * calls (if any), and the finish_reason.
- *
- * The caller drives the multi-iteration loop on top of this primitive.
+ * Thrown when the upstream returned HTTP 200 but its SSE payload contained
+ * a `{ "error": {...} }` frame. OpenRouter's free tier surfaces rate-limit
+ * and provider-side issues this way — the old parser silently dropped them
+ * and we'd close the stream with no content, looking like a successful
+ * empty completion. Triggers fallback when no tokens were streamed yet.
  */
-async function runOneOpenRouterPass(
-  apiKey: string,
+class UpstreamInStreamError extends Error {
+  constructor(
+    public providerLabel: string,
+    public upstreamMessage: string,
+  ) {
+    super(`${providerLabel} in-stream error: ${upstreamMessage}`);
+    this.name = "UpstreamInStreamError";
+  }
+}
+
+/**
+ * Thrown when iteration 0 of the tool loop produced ZERO content tokens
+ * AND ZERO tool calls. Happens with finish_reason "stop"/"length"/
+ * "content_filter" on an empty completion — also a silent-fail mode that
+ * the old code emitted as `done` with an empty placeholder.
+ */
+class UpstreamEmptyResponseError extends Error {
+  constructor(
+    public providerLabel: string,
+    public finishReason: string | null,
+  ) {
+    super(
+      `${providerLabel} returned no content (finish_reason=${finishReason ?? "null"})`,
+    );
+    this.name = "UpstreamEmptyResponseError";
+  }
+}
+
+/**
+ * Runs ONE pass against an OpenAI-compatible chat-completions endpoint
+ * with stream:true. Forwards token deltas to the client via the provided
+ * emit callback, accumulates tool_calls deltas, surfaces in-stream
+ * `error` frames as `UpstreamInStreamError`.
+ */
+async function runOneStreamingPass(
+  cfg: ProviderConfig,
   messages: LLMMessage[],
   signal: AbortSignal,
-  res: ExpressResponse,
+  emit: (event: StreamEvent) => void,
 ): Promise<{
   assistantText: string;
   toolCalls: AccumulatedToolCall[];
   finishReason: string | null;
 }> {
-  const upstream = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+  const upstream = await fetch(cfg.url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": OPENROUTER_HTTP_REFERER,
-      "X-Title": OPENROUTER_X_TITLE,
+      Authorization: `Bearer ${cfg.apiKey}`,
+      ...(cfg.extraHeaders ?? {}),
     },
     body: JSON.stringify({
-      model: OPENROUTER_MODEL,
+      model: cfg.model,
       messages,
       tools,
       stream: true,
@@ -112,10 +147,10 @@ async function runOneOpenRouterPass(
 
   if (!upstream.ok) {
     const text = await upstream.text().catch(() => "<empty>");
-    throw new Error(`OpenRouter ${upstream.status}: ${text.slice(0, 500)}`);
+    throw new Error(`${cfg.label} ${upstream.status}: ${text.slice(0, 500)}`);
   }
   if (!upstream.body) {
-    throw new Error("OpenRouter returned no response body");
+    throw new Error(`${cfg.label} returned no response body`);
   }
 
   const reader = upstream.body.getReader();
@@ -123,39 +158,45 @@ async function runOneOpenRouterPass(
   let buffer = "";
   let assistantText = "";
   let finishReason: string | null = null;
+  let inStreamError: string | null = null;
   const accumulatedCalls = new Map<number, AccumulatedToolCall>();
+
+  const finalize = (): {
+    assistantText: string;
+    toolCalls: AccumulatedToolCall[];
+    finishReason: string | null;
+  } => ({
+    assistantText,
+    toolCalls: Array.from(accumulatedCalls.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([, v]) => v),
+    finishReason,
+  });
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
 
-    // OpenRouter SSE: events are "data: <json>\n\n" separated. Strip
-    // everything except the `data: ` line per event block.
     const events = buffer.split("\n\n");
     buffer = events.pop() ?? "";
 
     for (const event of events) {
-      const dataLine = event
-        .split("\n")
-        .find((l) => l.startsWith("data: "));
+      const dataLine = event.split("\n").find((l) => l.startsWith("data: "));
       if (!dataLine) continue;
-      const payload = dataLine.slice(6); // strip "data: "
+      const payload = dataLine.slice(6);
       if (payload === "[DONE]") {
-        // Upstream stream ended. Return whatever we've accumulated.
-        return {
-          assistantText,
-          toolCalls: Array.from(accumulatedCalls.entries())
-            .sort((a, b) => a[0] - b[0])
-            .map(([, v]) => v),
-          finishReason,
-        };
+        if (inStreamError !== null) {
+          throw new UpstreamInStreamError(cfg.label, inStreamError);
+        }
+        return finalize();
       }
       let parsed: {
         choices?: Array<{
-          delta?: OpenRouterStreamingDelta;
+          delta?: OpenAICompatibleDelta;
           finish_reason?: string;
         }>;
+        error?: { message?: string; code?: string | number };
       };
       try {
         parsed = JSON.parse(payload);
@@ -164,18 +205,28 @@ async function runOneOpenRouterPass(
         continue;
       }
 
+      // OpenRouter free tier returns 200 + `{ "error": {...} }` SSE frames
+      // for rate limits and provider hiccups. Capture and surface — the
+      // old parser silently ignored these.
+      const errMsg = parsed.error?.message;
+      if (typeof errMsg === "string" && errMsg.length > 0) {
+        inStreamError = errMsg;
+        continue;
+      }
+
       const delta = parsed.choices?.[0]?.delta;
       const text = delta?.content;
       if (typeof text === "string" && text.length > 0) {
         assistantText += text;
-        sseWrite(res, { type: "token", text });
+        emit({ type: "token", text });
       }
-      // Accumulate tool-call deltas per index — arguments arrive
-      // character-by-character across multiple chunks.
       for (const tc of delta?.tool_calls ?? []) {
         if (tc.index === undefined) continue;
-        const existing =
-          accumulatedCalls.get(tc.index) ?? { id: "", name: "", arguments: "" };
+        const existing = accumulatedCalls.get(tc.index) ?? {
+          id: "",
+          name: "",
+          arguments: "",
+        };
         if (tc.id) existing.id = tc.id;
         if (tc.function?.name) existing.name = tc.function.name;
         if (tc.function?.arguments) existing.arguments += tc.function.arguments;
@@ -187,14 +238,84 @@ async function runOneOpenRouterPass(
       }
     }
   }
-  // Stream ended without [DONE] — return what we have.
-  return {
-    assistantText,
-    toolCalls: Array.from(accumulatedCalls.entries())
-      .sort((a, b) => a[0] - b[0])
-      .map(([, v]) => v),
-    finishReason,
-  };
+  // Stream ended without an explicit [DONE] frame.
+  if (inStreamError !== null) {
+    throw new UpstreamInStreamError(cfg.label, inStreamError);
+  }
+  return finalize();
+}
+
+/**
+ * Runs the full multi-iteration tool-use loop against ONE provider.
+ * Streams tokens through `emit` as they arrive. Throws on any failure;
+ * the caller decides whether to fall back.
+ */
+async function runToolLoop(
+  cfg: ProviderConfig,
+  messagesForLLM: LLMMessage[],
+  signal: AbortSignal,
+  emit: (event: StreamEvent) => void,
+  trpcCtx: TrpcContext,
+): Promise<{ finishReason: string | null }> {
+  for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
+    const pass = await runOneStreamingPass(cfg, messagesForLLM, signal, emit);
+
+    if (pass.finishReason !== "tool_calls" || pass.toolCalls.length === 0) {
+      // Iteration 0 empty completion → throw so the caller can fall back.
+      // After iteration 0 it's fine for the model to terminate with no
+      // text (e.g., the user got their answer from tool result blocks).
+      if (
+        iter === 0 &&
+        pass.assistantText.length === 0 &&
+        pass.toolCalls.length === 0
+      ) {
+        throw new UpstreamEmptyResponseError(cfg.label, pass.finishReason);
+      }
+      return { finishReason: pass.finishReason };
+    }
+
+    messagesForLLM.push({
+      role: "assistant",
+      content: pass.assistantText,
+      tool_calls: pass.toolCalls.map((c) => ({
+        id: c.id,
+        type: "function",
+        function: { name: c.name, arguments: c.arguments },
+      })),
+    });
+
+    for (const call of pass.toolCalls) {
+      let parsedToolInput: unknown = null;
+      try {
+        parsedToolInput =
+          call.arguments.trim().length === 0 ? {} : JSON.parse(call.arguments);
+      } catch {
+        parsedToolInput = { _raw: call.arguments.slice(0, 200) };
+      }
+      emit({ type: "tool_call", name: call.name, input: parsedToolInput });
+
+      const execResult = await executeTool(call.name, call.arguments, trpcCtx);
+
+      emit({
+        type: "tool_result",
+        name: call.name,
+        summary: execResult.resultSummary,
+      });
+      emit({
+        type: "token",
+        text: `\n\n${execResult.callSummary}\n${execResult.resultSummary}\n\n`,
+      });
+
+      messagesForLLM.push({
+        role: "tool",
+        tool_call_id: call.id,
+        content: execResult.toolMessageContent,
+      });
+    }
+  }
+  throw new Error(
+    `Tool-use loop exceeded ${MAX_TOOL_ITERATIONS} iterations without producing a final answer.`,
+  );
 }
 
 /**
@@ -203,38 +324,26 @@ async function runOneOpenRouterPass(
  * Body: { messages: Message[], pageContext?: unknown, pageIdentifier?: string }
  * Response: text/event-stream of SSE events. One `data: {...}\n\n` per event.
  *
- * Event types:
- *  - { type: "token", text }            — assistant text delta
- *  - { type: "tool_call", name, input } — structured, server-emitted when LLM invokes a tool
- *  - { type: "tool_result", name, summary } — structured, server-emitted after tool returns
- *  - { type: "done", finishReason }     — terminal success
- *  - { type: "error", message }         — terminal failure
+ * Provider chain:
+ *   1. OpenRouter (primary) — required, OPENROUTER_API_KEY.
+ *   2. Gemini direct API (fallback) — optional, GEMINI_API_KEY. Uses
+ *      Google AI Studio's OpenAI-compatible endpoint so the same pass
+ *      function handles both providers.
  *
- * The structured tool_call / tool_result events are for future audit
- * logging (checkpoint 6). The HUMAN-VISIBLE rendering of tool activity
- * happens via additional `token` events that emit the same info as
- * markdown blockquotes — this keeps the existing client rendering path
- * (placeholder.content += text) working without modification.
+ * Fallback engages only when the primary fails BEFORE emitting any
+ * tokens to the client. Once tokens have been streamed, switching
+ * providers would produce a confusing duplicated-prefix turn, so the
+ * primary's error is surfaced instead.
  *
  * Auth: hand-checks the same admin role tRPC's adminProcedure enforces
  * (belt-and-suspenders), then each tool execution re-checks via
  * createCaller(ctx) routing through adminProcedure middleware.
- *
- * Page context: if input.pageContext is provided, it's stringified
- * (capped at ~8KB) and prepended as a system message to the messages
- * passed upstream, with input.pageIdentifier as a path hint.
- *
- * Tool-use loop: capped at MAX_TOOL_ITERATIONS=6 passes. If the model
- * keeps calling tools beyond that, we emit an error event.
- *
- * On client disconnect: aborts the upstream OpenRouter fetch and closes the
- * response.
  */
 export async function adminChatStreamHandler(
   req: Request,
   res: ExpressResponse,
 ): Promise<void> {
-  // 1. Auth — admin-only
+  // 1. Auth — admin-only.
   let user;
   try {
     user = await sdk.authenticateRequest(req);
@@ -247,7 +356,7 @@ export async function adminChatStreamHandler(
     return;
   }
 
-  // 2. Validate body
+  // 2. Validate body.
   const parseResult = bodySchema.safeParse(req.body);
   if (!parseResult.success) {
     res.status(400).json({
@@ -258,41 +367,44 @@ export async function adminChatStreamHandler(
   }
   const input = parseResult.data;
 
-  // 3. API key
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey || apiKey.trim().length === 0) {
+  // 3. Provider keys.
+  const openRouterKey = process.env.OPENROUTER_API_KEY?.trim() ?? "";
+  const geminiKey = process.env.GEMINI_API_KEY?.trim() ?? "";
+
+  if (openRouterKey.length === 0) {
     res.status(500).json({
       error: "OPENROUTER_API_KEY is not configured on the admin backend.",
     });
     return;
   }
 
-  // 4. SSE headers
+  // 4. SSE headers.
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
-  // Hint to nginx / similar proxies: do NOT buffer this response.
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
-  // 5. AbortController so client disconnect cancels upstream call.
+  // 5. AbortController so client disconnect cancels any upstream call
+  //    (both primary and fallback share the same signal).
   const ac = new AbortController();
   let upstreamClosed = false;
   req.on("close", () => {
     if (!upstreamClosed) ac.abort();
   });
 
-  // 6. Build tRPC context for tool execution. The createCaller(ctx)
-  //    path routes each tool through adminProcedure middleware which
-  //    re-checks user.role === "admin" — that's the spec's "every tool
-  //    execution must re-check the admin's auth" rule satisfied
-  //    automatically.
+  // 6. Emitter wrapping res.write that tracks token events emitted so
+  //    we can decide whether a primary failure is safe to retry.
+  let tokensEmittedToClient = 0;
+  const emit = (event: StreamEvent): void => {
+    if (event.type === "token") tokensEmittedToClient += 1;
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  };
+
   const trpcCtx: TrpcContext = { req, res, user };
 
-  // 7. Compose the outgoing messages array, prepending a system message
-  //    with the page-context JSON snapshot (if any). The snapshot is
-  //    capped to ~8KB to bound prompt size.
-  const messagesForLLM: LLMMessage[] = input.messages.map((m) => ({
+  // 7. Compose the outgoing messages array.
+  const baseMessages: LLMMessage[] = input.messages.map((m) => ({
     role: m.role,
     content: m.content,
   }));
@@ -304,100 +416,46 @@ export async function adminChatStreamHandler(
     const pathHint = input.pageIdentifier
       ? ` (path: ${input.pageIdentifier})`
       : "";
-    messagesForLLM.unshift({
+    baseMessages.unshift({
       role: "system",
       content: `The admin is currently viewing this data on the dashboard${pathHint}. Use this as background context — it's the data already on their screen.\n\n\`\`\`json\n${pageContextStr}\n\`\`\``,
     });
   }
 
-  // 8. The tool-use loop. Each iteration runs ONE OpenRouter pass.
-  //    finish_reason === "tool_calls" means the model wants more data;
-  //    we execute the requested tools, append assistant+tool messages
-  //    to the conversation, and loop. finish_reason === "stop" (or any
-  //    non-tool finish) is terminal.
-  try {
-    for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
-      const pass = await runOneOpenRouterPass(
-        apiKey,
-        messagesForLLM,
-        ac.signal,
-        res,
-      );
-
-      if (pass.finishReason !== "tool_calls" || pass.toolCalls.length === 0) {
-        // Terminal — done.
-        sseWrite(res, { type: "done", finishReason: pass.finishReason });
-        upstreamClosed = true;
-        res.end();
-        return;
-      }
-
-      // Append the assistant turn (text + tool_calls) to the messages.
-      messagesForLLM.push({
-        role: "assistant",
-        content: pass.assistantText,
-        tool_calls: pass.toolCalls.map((c) => ({
-          id: c.id,
-          type: "function",
-          function: { name: c.name, arguments: c.arguments },
-        })),
-      });
-
-      // Execute each tool call in order, emit structured + markdown
-      // events, then append the tool result as a `tool` message.
-      for (const call of pass.toolCalls) {
-        let parsedToolInput: unknown = null;
-        try {
-          parsedToolInput =
-            call.arguments.trim().length === 0
-              ? {}
-              : JSON.parse(call.arguments);
-        } catch {
-          parsedToolInput = { _raw: call.arguments.slice(0, 200) };
+  const openRouterCfg: ProviderConfig = {
+    label: "OpenRouter",
+    url: `${OPENROUTER_BASE_URL}/chat/completions`,
+    apiKey: openRouterKey,
+    model: OPENROUTER_MODEL,
+    extraHeaders: {
+      "HTTP-Referer": OPENROUTER_HTTP_REFERER,
+      "X-Title": OPENROUTER_X_TITLE,
+    },
+  };
+  const geminiCfg: ProviderConfig | null =
+    geminiKey.length > 0
+      ? {
+          label: "Gemini",
+          url: `${GEMINI_BASE_URL}/chat/completions`,
+          apiKey: geminiKey,
+          model: GEMINI_FALLBACK_MODEL,
         }
-        sseWrite(res, {
-          type: "tool_call",
-          name: call.name,
-          input: parsedToolInput,
-        });
+      : null;
 
-        const execResult = await executeTool(
-          call.name,
-          call.arguments,
-          trpcCtx,
-        );
-
-        sseWrite(res, {
-          type: "tool_result",
-          name: call.name,
-          summary: execResult.resultSummary,
-        });
-
-        // Inline markdown rendering via the existing token channel so
-        // the client's placeholder.content accumulator picks it up
-        // without needing to handle the new event types.
-        sseWrite(res, {
-          type: "token",
-          text: `\n\n${execResult.callSummary}\n${execResult.resultSummary}\n\n`,
-        });
-
-        messagesForLLM.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: execResult.toolMessageContent,
-        });
-      }
-      // Loop back for the next pass with the augmented messages array.
-    }
-
-    // Fell out of the loop — exceeded MAX_TOOL_ITERATIONS without a
-    // terminal finish.
-    sseWrite(res, {
-      type: "error",
-      message: `Tool-use loop exceeded ${MAX_TOOL_ITERATIONS} iterations without producing a final answer.`,
-    });
-    upstreamClosed = true;
-    res.end();
+  // 8. Try the primary. Each provider gets its own copy of the message
+  //    array — runToolLoop mutates it as it adds assistant + tool turns,
+  //    and on failure we want the fallback to start from a clean slate.
+  const primaryMessages: LLMMessage[] = baseMessages.map((m) => ({ ...m }));
+  let primaryErr: unknown = null;
+  let primaryResult: { finishReason: string | null } | null = null;
+  try {
+    primaryResult = await runToolLoop(
+      openRouterCfg,
+      primaryMessages,
+      ac.signal,
+      emit,
+      trpcCtx,
+    );
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
       upstreamClosed = true;
@@ -408,14 +466,68 @@ export async function adminChatStreamHandler(
       }
       return;
     }
-    sseWrite(res, {
-      type: "error",
-      message:
-        err instanceof Error
-          ? `Stream interrupted: ${err.message}`
-          : "Stream interrupted",
-    });
+    primaryErr = err;
+  }
+
+  if (primaryErr === null && primaryResult !== null) {
+    emit({ type: "done", finishReason: primaryResult.finishReason });
     upstreamClosed = true;
     res.end();
+    return;
   }
+
+  // 9. Primary failed. Decide whether to fall back.
+  const canFallback =
+    geminiCfg !== null && tokensEmittedToClient === 0;
+
+  if (canFallback && geminiCfg !== null) {
+    const fallbackMessages: LLMMessage[] = baseMessages.map((m) => ({ ...m }));
+    try {
+      const fbResult = await runToolLoop(
+        geminiCfg,
+        fallbackMessages,
+        ac.signal,
+        emit,
+        trpcCtx,
+      );
+      emit({ type: "done", finishReason: fbResult.finishReason });
+      upstreamClosed = true;
+      res.end();
+      return;
+    } catch (fbErr) {
+      if (fbErr instanceof Error && fbErr.name === "AbortError") {
+        upstreamClosed = true;
+        try {
+          res.end();
+        } catch {
+          // ignore
+        }
+        return;
+      }
+      const primaryMsg =
+        primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+      const fbMsg = fbErr instanceof Error ? fbErr.message : String(fbErr);
+      emit({
+        type: "error",
+        message: `Both providers failed. Primary: ${primaryMsg}. Fallback: ${fbMsg}`,
+      });
+      upstreamClosed = true;
+      res.end();
+      return;
+    }
+  }
+
+  // 10. No fallback available — surface the primary error verbatim.
+  const noFallbackReason =
+    geminiCfg === null
+      ? " (no GEMINI_API_KEY configured for fallback)"
+      : " (primary already streamed partial content; fallback would duplicate output)";
+  const primaryMsg =
+    primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+  emit({
+    type: "error",
+    message: `${primaryMsg}${noFallbackReason}`,
+  });
+  upstreamClosed = true;
+  res.end();
 }
